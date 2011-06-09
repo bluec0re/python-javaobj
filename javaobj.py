@@ -7,7 +7,7 @@ javaobj module exposes an API familiar to users of the standard library marshal,
 See: http://download.oracle.com/javase/6/docs/platform/serialization/spec/protocol.html
 """
 
-import StringIO
+import io
 import struct
 
 try:
@@ -41,7 +41,11 @@ def loads(string):
     Deserializes Java objects and primitive data serialized by ObjectOutputStream
     from a string.
     """
-    f = StringIO.StringIO(string)
+    if isinstance(string, str):
+        f = io.StringIO(string)
+    else:
+        f = io.BytesIO(string)
+	#with f:
     marshaller = JavaObjectUnmarshaller(f)
     marshaller.add_transformer(DefaultObjectTransformer())
     return marshaller.readObject()
@@ -190,7 +194,7 @@ class JavaObjectUnmarshaller(JavaObjectConstants):
             self.object_stream.seek(position_bak)
 
             return res
-        except Exception, e:
+        except Exception as e:
             self._oops_dump_state()
             raise
 
@@ -222,7 +226,7 @@ class JavaObjectUnmarshaller(JavaObjectConstants):
     def _readString(self):
         (length, ) = self._readStruct(">H")
         ba = self.object_stream.read(length)
-        return ba
+        return ba.decode("utf8")
 
     def do_classdesc(self, parent=None, ident=0):
         # TC_CLASSDESC className serialVersionUID newHandle classDescInfo
@@ -381,8 +385,8 @@ class JavaObjectUnmarshaller(JavaObjectConstants):
     def do_string(self, parent=None, ident=0):
         log_debug("[string]", ident)
         ba = self._readString()
-        self._add_reference(str(ba))
-        return str(ba)
+        self._add_reference(ba)
+        return ba
 
     def do_array(self, parent=None, ident=0):
         # TC_ARRAY classDesc newHandle (int)<size> values[size]
@@ -430,12 +434,12 @@ class JavaObjectUnmarshaller(JavaObjectConstants):
         return enumConstantName
 
     def _create_hexdump(self, src, length=16):
-        FILTER=''.join([(len(repr(chr(x)))==3) and chr(x) or '.' for x in range(256)])
+        FILTER=bytes([(32 <= x < 127) and x or ord('.') for x in range(256)])
         result = []
-        for i in xrange(0, len(src), length):
+        for i in range(0, len(src), length):
             s = src[i:i+length]
-            hexa = ' '.join(["%02X"%ord(x) for x in s])
-            printable = s.translate(FILTER)
+            hexa = ' '.join(["%02X"%(x) for x in s])
+            printable = s.translate(FILTER).decode('ascii')
             result.append("%04X   %-*s  %s\n" % (i, length*3, hexa, printable))
         return ''.join(result)
 
@@ -482,7 +486,7 @@ class JavaObjectUnmarshaller(JavaObjectConstants):
         log_error("==Oops state dump" + "=" * (30 - 17))
         log_error("References: %s" % str(self.references))
         log_error("Stream seeking back at -16 byte (2nd line is an actual position!):")
-        self.object_stream.seek(-16, mode=1)
+        self.object_stream.seek(-16, io.SEEK_CUR)
         the_rest = self.object_stream.read()
         if len(the_rest):
             log_error("Warning!!!!: Stream still has %s bytes left." % len(the_rest))
@@ -498,7 +502,7 @@ class JavaObjectMarshaller(JavaObjectConstants):
     def dump(self, obj):
 
         self.object_obj = obj
-        self.object_stream = StringIO.StringIO()
+        self.object_stream = io.BytesIO()
         self._writeStreamHeader()
         self.writeObject(obj)
         return self.object_stream.getvalue()
@@ -510,7 +514,7 @@ class JavaObjectMarshaller(JavaObjectConstants):
         log_debug("Writing object of type " + str(type(obj)))
         if type(obj) is JavaObject:
             self.write_object(obj)
-        elif type(obj) is str:
+        elif type(obj) is bytes:
             self.write_blockdata(obj)
         else:
             raise RuntimeError("Object serialization of type %s is not supported." % str(type(obj)))
@@ -520,14 +524,14 @@ class JavaObjectMarshaller(JavaObjectConstants):
         self.object_stream.write(ba)
 
     def _writeString(self, string):
-        len = len(string)
+        len = len(string.encode("utf8"))
         self._writeStruct(">H", 2, (len, ))
-        self.object_stream.write(string)
+        self.object_stream.write(string.encode("utf8"))
 
     def write_blockdata(self, obj, parent=None):
         # TC_BLOCKDATA (unsigned byte)<size> (byte)[size]
         self._writeStruct(">B", 1, (self.TC_BLOCKDATA, ))
-        if type(obj) is str:
+        if type(obj) is bytes:
             self._writeStruct(">B", 1, (len(obj), ))
             self.object_stream.write(obj)
 
@@ -548,39 +552,39 @@ class DefaultObjectTransformer(object):
             #    * @serialData The length of the array backing the <tt>ArrayList</tt>
             #    *             instance is emitted (int), followed by all of its elements
             #    *             (each an <tt>Object</tt>) in the proper order.
-            print "---"
-            print "java.util.ArrayList"
-            print object.annotations
-            print "---"
+            print("---")
+            print("java.util.ArrayList")
+            print(object.annotations)
+            print("---")
             new_object = self.JavaList()
             object.copy(new_object)
             new_object.extend(object.annotations[1:])
-            print ">>> object:", new_object
+            print(">>> object:", new_object)
             return new_object
         if object.get_class().name == "java.util.LinkedList":
-            print "---"
-            print
-            print "java.util.LinkedList"
-            print object.annotations
-            print "---"
+            print("---")
+            print()
+            print("java.util.LinkedList")
+            print(object.annotations)
+            print("---")
             new_object = self.JavaList()
             object.copy(new_object)
             new_object.extend(object.annotations[1:])
-            print ">>> object:", new_object
+            print(">>> object:", new_object)
             return new_object
         if object.get_class().name == "java.util.HashMap":
-            print "---"
-            print
-            print "java.util.HashMap"
-            print object.annotations
-            print "---"
+            print("---")
+            print()
+            print("java.util.HashMap")
+            print(object.annotations)
+            print("---")
             new_object = self.JavaMap()
             object.copy(new_object)
 
-            for i in range((len(object.annotations)-1)/2):
+            for i in range((len(object.annotations)-1)//2):
                 new_object[object.annotations[i*2+1]] = object.annotations[i*2+2]
 
-            print ">>> object:", new_object
+            print(">>> object:", new_object)
             return new_object
 
         return object
