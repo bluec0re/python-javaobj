@@ -38,8 +38,10 @@ def load(file_object, *args):
     marshaller.add_transformer(DefaultObjectTransformer())
     return marshaller.readObject()
 
-def load_all(file_object):
+def load_all(file_object, *args):
     marshaller = JavaObjectUnmarshaller(file_object)
+    for t in args:
+        marshaller.add_transformer(t)
     marshaller.add_transformer(DefaultObjectTransformer())
     
     res = []
@@ -572,11 +574,15 @@ class JavaObjectUnmarshaller(JavaObjectConstants):
         log_error("==Oops state dump" + "=" * (30 - 17))
         log_error("References: %s" % str(self.references))
         log_error("Stream seeking back at -16 byte (2nd line is an actual position!):")
-        self.object_stream.seek(-16, 1)
-        the_rest = self.object_stream.read()
-        if len(the_rest):
-            log_error("Warning!!!!: Stream still has %s bytes left." % len(the_rest))
-            log_error(self._create_hexdump(the_rest))
+        pos = self.object_stream.tell()
+        try:
+            self.object_stream.seek(-16, 1)
+            the_rest = self.object_stream.read()
+            if len(the_rest):
+                log_error("Warning!!!!: Stream still has %s bytes left." % len(the_rest))
+                log_error(self._create_hexdump(the_rest))
+        except IOError:
+            self.object_stream.seek(pos)
         log_error("=" * 30)
 
 
