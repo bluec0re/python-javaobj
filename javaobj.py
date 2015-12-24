@@ -101,6 +101,25 @@ class JavaClass(object):
                 self.superclass == other.superclass)
 
 
+class JavaProxyClass(object):
+    def __init__(self):
+        self.handle = None
+        self.interface_names = []
+        self.superclass = None
+
+    def __str__(self):
+        return self.__repr__()
+
+    def __repr__(self):
+        return "[Proxy:%s]" % (','.join(self.interface_names))
+
+    def __eq__(self, other):
+        if not isinstance(other, type(self)):
+            return False
+        return (self.interface_names == other.interface_names and
+                self.superclass == other.superclass)
+
+
 class JavaObject(object):
 
     def __init__(self):
@@ -116,7 +135,7 @@ class JavaObject(object):
     def __repr__(self):
         name = "UNKNOWN"
         if self.classdesc:
-            name = self.classdesc.name
+            name = str(self.classdesc)
         return "<javaobj:%s>" % name
 
     def __eq__(self, other):
@@ -124,9 +143,10 @@ class JavaObject(object):
             return False
         res = (self.classdesc == other.classdesc and
                 self.annotations == other.annotations)
-        for name in self.classdesc.fields_names:
-            res = (res and 
-                   getattr(self, name) == getattr(other, name))
+        if hasattr(self.classdesc, 'fields_names'):
+            for name in self.classdesc.fields_names:
+                res = (res and 
+                       getattr(self, name) == getattr(other, name))
         return res
 
     def copy(self, new_object):
@@ -231,6 +251,7 @@ class JavaObjectUnmarshaller(JavaObjectConstants):
             self.TC_REFERENCE: self.do_reference,
             self.TC_ENUM: self.do_enum,
             self.TC_ENDBLOCKDATA: self.do_null, # note that we are reusing of do_null
+            self.TC_PROXYCLASSDESC: self.do_proxyclassdesc
         }
         self.current_object = None
         self.reference_counter = 0
@@ -362,6 +383,35 @@ class JavaObjectUnmarshaller(JavaObjectConstants):
 
         return clazz
 
+    def do_proxyclassdesc(self, parent=None, ident=0):
+        # TC_PROXYCLASSDESC newHandle proxyClassDescInfo
+        # proxyClassDescInfo:
+        #   (int)<count> proxyInterfaceName[count] classAnnotation
+        #         superClassDesc
+        log_debug('[proxyclassdesc]', ident)
+        proxyclazz = JavaProxyClass()
+        self._add_reference(proxyclazz)
+
+
+        (count, ) = self._readStruct(">I")
+        log_debug("proxyInterfaceName[] = %d" % (count, ), ident)
+        for i in range(count):
+            proxyInterfaceName = self._readString()
+            log_debug('proxyInterfaceName[%d] = %s' % (i, proxyInterfaceName), ident)
+            proxyclazz.interface_names.append(proxyInterfaceName)
+
+        # classAnnotation
+        (opid, ) = self._readStruct(">B")
+        log_debug("OpCode: 0x%X" % opid, ident)
+        if opid != self.TC_ENDBLOCKDATA:
+            raise NotImplementedError("classAnnotation isn't implemented yet")
+        # superClassDesc
+        opcode, superclassdesc = self._read_and_exec_opcode(ident=ident+1, expect=[self.TC_CLASSDESC, self.TC_NULL, self.TC_REFERENCE])
+        log_debug(str(superclassdesc), ident)
+        proxyclazz.superclass = superclassdesc
+        return proxyclazz
+
+
     def do_blockdata(self, parent=None, ident=0):
         # TC_BLOCKDATA (unsigned byte)<size> (byte)[size]
         log_debug("[blockdata]", ident)
@@ -404,44 +454,46 @@ class JavaObjectUnmarshaller(JavaObjectConstants):
         # Store classdesc of this object
         java_object.classdesc = classdesc
 
-        if classdesc.flags & self.SC_EXTERNALIZABLE and not classdesc.flags & self.SC_BLOCK_DATA:
-            raise NotImplementedError("externalContents isn't implemented yet") # TODO:
+        if hasattr(classdesc, 'flags'):
 
-        if classdesc.flags & self.SC_SERIALIZABLE:
-            # create megalist
-            tempclass = classdesc
-            megalist = []
-            megatypes = []
-            while tempclass:
-                log_debug(">>> " + str(tempclass.fields_names) + " " + str(tempclass), ident)
-                log_debug(">>> " + str(tempclass.fields_types), ident)
-                fieldscopy = tempclass.fields_names[:]
-                fieldscopy.extend(megalist)
-                megalist = fieldscopy
+            if classdesc.flags & self.SC_EXTERNALIZABLE and not classdesc.flags & self.SC_BLOCK_DATA:
+                raise NotImplementedError("externalContents isn't implemented yet") # TODO:
 
-                fieldscopy = tempclass.fields_types[:]
-                fieldscopy.extend(megatypes)
-                megatypes = fieldscopy
+            if classdesc.flags & self.SC_SERIALIZABLE:
+                # create megalist
+                tempclass = classdesc
+                megalist = []
+                megatypes = []
+                while tempclass:
+                    log_debug(">>> " + str(tempclass.fields_names) + " " + str(tempclass), ident)
+                    log_debug(">>> " + str(tempclass.fields_types), ident)
+                    fieldscopy = tempclass.fields_names[:]
+                    fieldscopy.extend(megalist)
+                    megalist = fieldscopy
 
-                tempclass = tempclass.superclass
+                    fieldscopy = tempclass.fields_types[:]
+                    fieldscopy.extend(megatypes)
+                    megatypes = fieldscopy
 
-            log_debug("Values count: %s" % str(len(megalist)), ident)
-            log_debug("Prepared list of values: %s" % str(megalist), ident)
-            log_debug("Prepared list of types: %s" % str(megatypes), ident)
+                    tempclass = tempclass.superclass
 
-            for field_name, field_type in zip(megalist, megatypes):
-                res = self._read_value(field_type, ident, name=field_name)
-                java_object.__setattr__(field_name, res)
+                log_debug("Values count: %s" % str(len(megalist)), ident)
+                log_debug("Prepared list of values: %s" % str(megalist), ident)
+                log_debug("Prepared list of types: %s" % str(megatypes), ident)
 
-        if classdesc.flags & self.SC_SERIALIZABLE and classdesc.flags & self.SC_WRITE_METHOD or classdesc.flags & self.SC_EXTERNALIZABLE and classdesc.flags & self.SC_BLOCK_DATA:
-            # objectAnnotation
-            log_debug("java_object.annotations before: " + str(java_object.annotations), ident)
-            while opcode != self.TC_ENDBLOCKDATA:
-                opcode, obj = self._read_and_exec_opcode(ident=ident+1) # , expect=[self.TC_ENDBLOCKDATA, self.TC_BLOCKDATA, self.TC_OBJECT, self.TC_NULL, self.TC_REFERENCE])
-                if opcode != self.TC_ENDBLOCKDATA:
-                    java_object.annotations.append(obj)
-                log_debug("objectAnnotation value: " + str(obj), ident)
-            log_debug("java_object.annotations after: " + str(java_object.annotations), ident)
+                for field_name, field_type in zip(megalist, megatypes):
+                    res = self._read_value(field_type, ident, name=field_name)
+                    java_object.__setattr__(field_name, res)
+
+            if classdesc.flags & self.SC_SERIALIZABLE and classdesc.flags & self.SC_WRITE_METHOD or classdesc.flags & self.SC_EXTERNALIZABLE and classdesc.flags & self.SC_BLOCK_DATA:
+                # objectAnnotation
+                log_debug("java_object.annotations before: " + str(java_object.annotations), ident)
+                while opcode != self.TC_ENDBLOCKDATA:
+                    opcode, obj = self._read_and_exec_opcode(ident=ident+1) # , expect=[self.TC_ENDBLOCKDATA, self.TC_BLOCKDATA, self.TC_OBJECT, self.TC_NULL, self.TC_REFERENCE])
+                    if opcode != self.TC_ENDBLOCKDATA:
+                        java_object.annotations.append(obj)
+                    log_debug("objectAnnotation value: " + str(obj), ident)
+                log_debug("java_object.annotations after: " + str(java_object.annotations), ident)
 
         # Transform object
         for transformer in self.object_transformers:
@@ -809,6 +861,9 @@ class DefaultObjectTransformer(object):
             JavaObject.__init__(self)
 
     def transform(self, object):
+        if object.get_class() is None or not hasattr(object.get_class(), 'name'):
+            return object
+
         if object.get_class().name == "java.util.ArrayList":
             #    * @serialData The length of the array backing the <tt>ArrayList</tt>
             #    *             instance is emitted (int), followed by all of its elements
